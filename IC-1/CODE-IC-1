@@ -1,0 +1,179 @@
+#define _MAIN_C
+#include <Intrins.h>
+#include <Absacc.h>
+#include <Stdio.h>  
+#include ".\include\REG_MG82F6D17.H"
+#include ".\include\Type.h"
+#include ".\include\API_Macro_MG82F6D17.H"
+#include ".\include\API_Uart_BRGRL_MG82F6D17.H"
+
+#define SPI_nSS P33
+#define MAX_QUEUE 10       
+
+// Sabhi bade structures aur buffers ko XDATA memory me daal diya hai
+xdata u8 DataQueue[MAX_QUEUE][8]; 
+xdata u8 uart_buf[65]; // 64 bits + null terminator in XDATA
+xdata u8 raw_bytes[8]; // Raw 8 bytes output array in XDATA
+
+u8 q_write_idx = 0;        
+u8 q_read_idx = 0;         
+volatile u8 q_count = 0;   
+u8 b_idx = 0;
+volatile bit result_ready = 0; 
+
+// --- Function Prototypes ---
+void InitDMA_SPI_TX(void);
+void Check_And_Send_Queue(void);
+
+// --- Putchar for printf ---
+char putchar (char c) {      
+    S0BUF = c;         
+    while(TI0 == 0); 
+    TI0 = 0;         
+    return c;
+}
+
+// --- External Interrupt ---
+void External0_ISR() interrupt 0 {
+    result_ready = 1;
+}
+
+// --- Logic to Convert Binary Text to Raw Bytes ---
+void Convert_Bits_To_Bytes(char* word) {
+    u8 i, k;
+    u8 bit_pos = 0;
+    u8 byte_idx = 0;
+
+    // Pehle pure 8 bytes array ko zero (0x00) kar lein
+    for(i = 0; i < 8; i++) {
+        raw_bytes[i] = 0;
+    }
+
+    printf("\n[BITS RECVD]: %s", word);
+
+    // Loop through characters ('0' or '1')
+    for(i = 0; word[i] != '\0'; i++) {
+        if (word[i] == '1') {
+            // Agar text '1' hai, toh byte ke sahi position par 1 set karein
+            raw_bytes[byte_idx] |= (1 << (7 - bit_pos));
+        }
+        
+        bit_pos++;
+        if (bit_pos >= 8) { // 8 bits hote hi agle byte par shift karein
+            bit_pos = 0;
+            byte_idx++;
+            if (byte_idx >= 8) break; // Max 8 bytes limit
+        }
+    }
+
+    // Queue me raw data transfer karein
+    if (q_count < MAX_QUEUE) {
+        printf(" | RAW HEX: ");
+        for(k = 0; k < 8; k++) {
+            DataQueue[q_write_idx][k] = raw_bytes[k];
+            printf("%02bX ", raw_bytes[k]); 
+        }
+        printf("\n");
+        
+        q_write_idx = (q_write_idx + 1) % MAX_QUEUE;    
+        q_count++;                                      
+    } else {
+        printf("\n[QUEUE FULL!]");
+    }
+}
+
+void InitDMA_SPI_TX(void) {
+    DMA_Disable();
+    DMA_SetSource_XRAM();                
+    DMA_SetDestination_SPI0TX();         
+    DMA_Enable();                        
+}
+
+void Check_And_Send_Queue(void) {
+    u8 m;
+    if (q_count > 0 && (DMACR0 & 0x01) == 0) {
+        SPI_nSS = 0; 
+        
+        DMA_Disable();
+        DMA_SetXRAMStartaddr((u16)&DataQueue[q_read_idx][0]);
+        DMA_SetCount(65536 - 8); // 8 bytes send karne ke liye
+        DMA_Enable();
+        DMA_Start(); 
+        
+        while(DMA_ChkCompleteFlag() == 0); 
+        DMA_ClearCompleteFlag();
+        while(SPI_ChkCompleteFlag() == 0);
+        SPI_ClearCompleteFlag();
+        
+        SPI_nSS = 1; 
+        
+        // --- NAYA PRINT LOGIC ---
+        // Yaha hum wahi print kar rahe hain jo actual me physical SPI lines par out hua hai
+        printf("[SPI OUT]: ");
+        for(m = 0; m < 8; m++) {
+            printf("%02bX ", DataQueue[q_read_idx][m]);
+        }
+        
+        q_read_idx = (q_read_idx + 1) % MAX_QUEUE;
+        q_count--;
+        printf("| Pending in Queue: %bd\n> ", q_count);
+    }
+}
+
+void InitSystem(void) {
+    CLK_SetCKCON0(IHRCO_12MHz|CPUCLK_SYSCLK_DIV_1|SYSCLK_MCKDO_DIV_1);
+    INT_SetINT0P34();
+    INT_SetINT0_DetectFallingEdge();
+    
+    PORT_SetP3QuasiBi(BIT0|BIT1|BIT3|BIT4); 
+    PORT_SetP1PushPull(BIT5|BIT7);     
+    PORT_SetP1OpenDrainPu(BIT4|BIT6);  
+    
+    UART0_SetAccess_S0CR1();
+    UART0_SetMode8bitUARTVar();
+    UART0_EnReception();
+    UART0_SetBRGFromS0BRG();
+    UART0_SetS0BRGBaudRateX2();
+    UART0_SetS0BRGSelSYSCLK();
+    UART0_SetS0BRGValue(S0BRG_BRGRL_9600_2X_12000000_1T);
+    UART0_EnS0BRG();
+    TI0 = 1;
+
+    SPI_Enable();
+    SPI_SelectMASTERByMSTRbit();
+    SPI_SetClock(SPI_CLK_SYSCLK_64); 
+    SPI_SetCPOL_0(); SPI_SetCPHA_1();
+    SPI_SetDataMSB(); SPI_SetUseP33P15P16P17();
+
+    IT0 = 1; EX0 = 1; EA = 1; 
+}
+
+void main(void) {
+    InitSystem();
+    InitDMA_SPI_TX();
+    printf("\n*** DIRECT BIT-TO-SPI CONVERTER READY ***\n> ");
+
+    while(1) {
+        if (RI0) {
+            u8 val = S0BUF; RI0 = 0;
+            if (val == '\r' || val == '\n') {
+                if(b_idx > 0) {
+                    uart_buf[b_idx] = '\0';
+                    Convert_Bits_To_Bytes((char*)uart_buf); // Memory segment pointer casting
+                    b_idx = 0;
+                }
+            }
+            else { 
+                // Sirf binary '0' aur '1' ko buffer me lene ka filter
+                if ((val == '0' || val == '1') && (b_idx < 64)) {
+                    uart_buf[b_idx++] = val; 
+                    putchar(val); 
+                }
+            }
+        }
+
+        if (q_count > 0) {
+            Check_And_Send_Queue();
+        }
+    }
+}
