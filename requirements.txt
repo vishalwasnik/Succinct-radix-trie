@@ -1,0 +1,23 @@
+==================================================
+PROJECT REQUIREMENTS: Succinct Radix Trie on MG82F6D17
+==================================================
+
+1. HARDWARE REQUIREMENTS:
+   - Microcontroller: Megawin MG82F6D17 (8051 Core Architecture)
+   - Programmer/Debugger: Standard 8051 ISP Programmer
+   - Communication: USB-to-UART Bridge (for serial debugging at 9600 Baud)
+   - SPI Peripherals / External ICs (connected via SPI & GPIOs)
+
+2. SOFTWARE / IDE REQUIREMENTS:
+   - IDE: Keil µVision (C51 Compiler)
+   - Toolchains: 
+     * Keil C51 Compiler (v9.x or higher)
+     * A51 Macro Assembler (for TRIE_ASM_MODULE)
+
+3. DEPENDENCIES & HEADERS (Included in Project Include Path):
+   - REG_MG82F6D17.H
+   - Type.h
+   - API_Macro_MG82F6D17.H
+   - API_Uart_BRGRL_MG82F6D17.H
+   - Standard C Libraries: <Intrins.h>, <Absacc.h>, <Stdio.h>
+                            
